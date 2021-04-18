@@ -37,6 +37,9 @@
 #include <list>
 #include <string>
 #include <fstream>
+#include <iostream>
+#include <memory>
+#include <map>
 #include <sys/time.h>
 
 #include "llvm/Config/llvm-config.h"
@@ -63,6 +66,17 @@ typedef long double max_align_t;
 
 #include "afl-llvm-common.h"
 #include "llvm-alternative-coverage.h"
+
+// template<typename ... Args>
+// std::string string_format( const std::string& format, Args ... args )
+// {
+//     int size_s = snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
+//     if( size_s <= 0 ){ printf( "Error during formatting." ); }
+//     auto size = static_cast<size_t>( size_s );
+//     auto buf = std::make_unique<char[]>( size );
+//     snprintf( buf.get(), size, format.c_str(), args ... );
+//     return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
+// }
 
 using namespace llvm;
 
@@ -398,6 +412,8 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   int inst_blocks = 0;
   scanForDangerousFunctions(&M);
+  // std::vector<BasicBlock> BBList;
+  std::map<BasicBlock*, unsigned int> label_map;
 
   for (auto &F : M) {
 
@@ -507,6 +523,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       // cur_loc++;
       cur_loc = AFL_R(map_size);
+      label_map[&BB] = cur_loc;
 
 /* There is a problem with Ubuntu 18.04 and llvm 6.0 (see issue #63).
    The inline function successors() is not inlined and also not found at runtime
@@ -716,6 +733,39 @@ bool AFLCoverage::runOnModule(Module &M) {
     }
 
   }
+
+  // generate CFG csv file in /tmp
+  std::string MName = M.getName().str();
+  std::ofstream LabelFile;
+  LabelFile.open ("/home/stargazermiao/workspace/tmp/AFL_BBLabel_" + MName + ".csv");
+
+  int counter = 0;
+  for (auto &F : M) {
+    std::ofstream FucCFGFile;
+    auto FName = F.getName().str();
+    FucCFGFile.open("/home/stargazermiao/workspace/tmp/" + FName + "_" + MName + ".csv");
+    
+    if (!isInInstrumentList(&F)) continue;
+
+    if (F.size() < function_minimum_size) continue;
+
+    for (auto &BB : F) {
+      if (AFL_R(100) >= inst_ratio) continue;
+      LabelFile << label_map[&BB] << std::endl;
+      const Instruction* TInsn = BB.getTerminator();
+      for (unsigned I = 0, NSucc = TInsn->getNumSuccessors(); I < NSucc; I++) {
+        counter ++;
+        BasicBlock *SuccBlock = TInsn->getSuccessor(I);
+        auto FromILabel = label_map[&BB];
+        auto ToILabel = label_map[SuccBlock];
+        FucCFGFile << FromILabel << ", " << ToILabel << std::endl;
+      }
+    }
+    FucCFGFile.close();
+  }
+  LabelFile.close();
+
+  std::cout << ">>>>>>>>>>>>>>>" << counter;
 
   /*
     // This is currently disabled because we not only need to create/insert a
